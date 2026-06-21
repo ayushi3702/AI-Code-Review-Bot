@@ -1,0 +1,30 @@
+openai>=1.30.0
+langgraph>=0.2.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+
+# Repo-wide deep scan: embeddings + retrieval
+chromadb>=0.5.0
+langchain-chroma>=0.1.0
+tiktoken>=0.7.0
+
+# Optional local (Hugging Face) embeddings — set EMBEDDING_PROVIDER=huggingface
+langchain-huggingface>=0.1.0
+sentence-transformers>=3.0.0
+GitPython>=3.1.43
+pathspec>=0.12.1
+
+# Reports
+Jinja2>=3.1.4
+rich>=13.7.0
+
+# Web + storage
+sqlalchemy>=2.0.0
+pydantic>=2.7.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-dotenv>=1.0.0
+
+# Tests
+pytest>=8.2.0
+pytest-asyncio>=0.23.0

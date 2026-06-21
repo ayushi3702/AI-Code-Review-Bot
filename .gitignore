@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.db
+.chroma/
+.scan_workspace/
+reports/
+frontend/node_modules/
+frontend/dist/
+.env
