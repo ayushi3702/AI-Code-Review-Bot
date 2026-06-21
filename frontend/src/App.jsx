@@ -11,6 +11,8 @@ const STAGE_LABEL = {
   done: "Done",
 };
 const SEV_CLASS = { high: "sev-high", medium: "sev-med", low: "sev-low" };
+const SEV_ORDER = ["high", "medium", "low"];
+const SEV_LABEL = { high: "High", medium: "Medium", low: "Low" };
 const AGENT_LABEL = {
   security: "Security",
   performance: "Performance",
@@ -54,9 +56,9 @@ export default function App() {
     }
   }
 
-  const findingsByAgent = {};
+  const findingsBySeverity = { high: [], medium: [], low: [] };
   (scan?.findings || []).forEach((f) => {
-    (findingsByAgent[f.agent] = findingsByAgent[f.agent] || []).push(f);
+    (findingsBySeverity[f.severity] = findingsBySeverity[f.severity] || []).push(f);
   });
 
   return (
@@ -116,16 +118,17 @@ export default function App() {
                 </a>
               </div>
 
-              {Object.keys(findingsByAgent).length === 0 ? (
+              {(scan.findings || []).length === 0 ? (
                 <div className="ok">✅ No significant issues found.</div>
               ) : (
-                Object.entries(findingsByAgent).map(([agent, items]) => (
-                  <section key={agent} className="agent">
-                    <h2>{AGENT_LABEL[agent] || agent} ({items.length})</h2>
-                    {items.map((f, i) => (
+                SEV_ORDER.filter((sev) => (findingsBySeverity[sev] || []).length).map((sev) => (
+                  <details key={sev} className="agent" open>
+                    <summary><h2>{SEV_LABEL[sev]} ({findingsBySeverity[sev].length})</h2></summary>
+                    {findingsBySeverity[sev].map((f, i) => (
                       <div key={i} className={`finding ${SEV_CLASS[f.severity]}`}>
                         <div className="ftitle">
                           <span className="badge">{f.severity}</span> {f.title}
+                          <span className="fagent muted"> · {AGENT_LABEL[f.agent] || f.agent}</span>
                         </div>
                         <div className="floc">
                           {f.file}{f.line ? `:${f.line}` : ""}
@@ -134,7 +137,7 @@ export default function App() {
                         {f.recommendation && <div className="ffix">💡 {f.recommendation}</div>}
                       </div>
                     ))}
-                  </section>
+                  </details>
                 ))
               )}
             </>

@@ -36,7 +36,7 @@ HF_EMBEDDING_MODEL = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-
 
 
 @functools.lru_cache(maxsize=4)
-def get_chat_llm(max_tokens: int = 1200, json_mode: bool = True):
+def get_chat_llm(max_tokens: int = 4000, json_mode: bool = True):
     """Return a cached AzureChatOpenAI client.
 
     json_mode forces the model to emit a JSON object, which every agent relies

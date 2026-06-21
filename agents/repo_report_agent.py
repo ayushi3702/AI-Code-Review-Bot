@@ -12,6 +12,8 @@ import datetime
 import html
 import logging
 
+IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
 from jinja2 import Template
 
 from core.state import ScanState, ScanFinding
@@ -41,9 +43,14 @@ def _dedupe(findings: list[ScanFinding]) -> list[ScanFinding]:
     return out
 
 
-def _score(findings: list[ScanFinding]) -> tuple[int, str]:
-    penalty = sum(SEVERITY_WEIGHT.get(f.severity, 3) for f in findings)
-    score = max(0, 100 - penalty)
+def _score(findings: list[ScanFinding], file_count: int = 0) -> tuple[int, str]:
+    # Normalize by repo size so large repos aren't punished just for being big:
+    # we score the *density* of weighted issues per file rather than a raw sum.
+    weighted = sum(SEVERITY_WEIGHT.get(f.severity, 3) for f in findings)
+    files = max(file_count, 1)
+    density = weighted / files               # weighted issues per file
+    penalty = min(100, density * 6)          # 6 pts per weighted-issue-per-file, capped
+    score = max(0, round(100 - penalty))
     grade = (
         "A" if score >= 90 else
         "B" if score >= 80 else
@@ -95,7 +102,7 @@ def build_markdown(state: ScanState, findings: list[ScanFinding], score: int, gr
         lines.append("")
 
     lines.append("---")
-    lines.append(f"*Generated {datetime.datetime.utcnow():%Y-%m-%d %H:%M UTC} by the AI Code Review Platform "
+    lines.append(f"*Generated {datetime.datetime.now(IST):%Y-%m-%d %H:%M IST} by the AI Code Review Platform "
                  "(security · performance · architecture · quality agents, run in parallel).*")
     return "\n".join(lines)
 
@@ -106,9 +113,13 @@ _HTML_TEMPLATE = Template("""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Code Review — {{ repo }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%8D%3C/text%3E%3C/svg%3E"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
 <style>
   :root { --hi:#e5484d; --med:#f5a623; --lo:#3b82f6; --bg:#0d1117; --card:#161b22; --fg:#e6edf3; --muted:#8b949e; }
-  * { box-sizing:border-box; } body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  * { box-sizing:border-box; } body { margin:0; font-family:"Poppins",system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
   .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
   h1 { font-size:1.6rem; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 24px; }
   .score { display:flex; align-items:center; gap:20px; background:var(--card); border:1px solid #30363d; border-radius:14px; padding:20px 24px; margin-bottom:24px; }
@@ -117,6 +128,11 @@ _HTML_TEMPLATE = Template("""<!doctype html>
   .pills span { display:inline-block; padding:4px 10px; border-radius:999px; font-size:.8rem; margin-right:8px; }
   .p-high{background:rgba(229,72,77,.15);color:var(--hi)} .p-med{background:rgba(245,166,35,.15);color:var(--med)} .p-low{background:rgba(59,130,246,.15);color:var(--lo)}
   .agent { margin-top:28px; } .agent h2 { font-size:1.15rem; border-bottom:1px solid #30363d; padding-bottom:8px; }
+  .agent > summary { cursor:pointer; list-style:none; user-select:none; display:flex; align-items:center; gap:8px; }
+  .agent > summary::-webkit-details-marker { display:none; }
+  .agent > summary::before { content:"\u25be"; color:var(--muted); font-size:.9rem; transition:transform .15s ease; }
+  .agent:not([open]) > summary::before { transform:rotate(-90deg); }
+  .agent > summary h2 { margin:0; flex:1; }
   .finding { background:var(--card); border:1px solid #30363d; border-left:4px solid var(--muted); border-radius:10px; padding:14px 16px; margin:12px 0; }
   .finding.high{border-left-color:var(--hi)} .finding.medium{border-left-color:var(--med)} .finding.low{border-left-color:var(--lo)}
   .finding .title { font-weight:600; } .finding .loc { color:var(--muted); font-size:.85rem; font-family:ui-monospace,monospace; }
@@ -141,8 +157,8 @@ _HTML_TEMPLATE = Template("""<!doctype html>
     <div class="ok">✅ No significant issues found across the repository.</div>
   {% else %}
     {% for agent, items in by_agent.items() %}
-    <section class="agent">
-      <h2>{{ agent_label(agent) }} ({{ items|length }})</h2>
+    <details class="agent" open>
+      <summary><h2>{{ agent_label(agent) }} ({{ items|length }})</h2></summary>
       {% for f in items %}
       <div class="finding {{ f.severity }}">
         <div class="title">{{ emoji(f.severity) }} {{ f.title }}</div>
@@ -151,10 +167,10 @@ _HTML_TEMPLATE = Template("""<!doctype html>
         {% if f.recommendation %}<div class="fix">💡 {{ f.recommendation }}</div>{% endif %}
       </div>
       {% endfor %}
-    </section>
+    </details>
     {% endfor %}
   {% endif %}
-  <footer>Generated {{ ts }} UTC · AI Code Review Platform — security · performance · architecture · quality.</footer>
+  <footer>Generated {{ ts }} IST · AI Code Review Platform — security · performance · architecture · quality.</footer>
 </div></body></html>""")
 
 
@@ -175,7 +191,7 @@ def build_html(state: ScanState, findings: list[ScanFinding], score: int, grade:
         by_agent=by_agent,
         agent_label=lambda a: AGENT_LABEL.get(a, a.title()),
         emoji=lambda s: SEVERITY_EMOJI.get(s, "⚪"),
-        ts=f"{datetime.datetime.utcnow():%Y-%m-%d %H:%M}",
+        ts=f"{datetime.datetime.now(IST):%Y-%m-%d %H:%M}",
     )
 
 
@@ -185,7 +201,7 @@ async def repo_report_agent(state: ScanState) -> dict:
     db = SessionLocal()
     try:
         findings = _dedupe(state.findings)
-        score, grade = _score(findings)
+        score, grade = _score(findings, state.file_count)
         markdown = build_markdown(state, findings, score, grade)
         html_doc = build_html(state, findings, score, grade)
 

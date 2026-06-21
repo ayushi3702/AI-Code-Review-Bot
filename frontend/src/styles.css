@@ -69,6 +69,17 @@ header h1 { margin: 0 0 6px; font-size: 1.8rem; }
 
 .agent { margin-top: 26px; }
 .agent h2 { font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.agent > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+}
+.agent > summary::-webkit-details-marker { display: none; }
+.agent > summary::before {
+  content: "▾"; color: var(--muted); font-size: 0.9rem;
+  transition: transform 0.15s ease;
+}
+.agent:not([open]) > summary::before { transform: rotate(-90deg); }
+.agent > summary h2 { display: inline-block; margin: 0; flex: 1; }
 .finding {
   background: var(--card); border: 1px solid var(--border);
   border-left: 4px solid var(--muted); border-radius: 10px;
