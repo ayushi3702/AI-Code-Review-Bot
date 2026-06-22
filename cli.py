@@ -1,12 +1,11 @@
 """CLI for the repo-wide deep-scan platform.
 
 Usage:
-    python cli.py scan <repo-url-or-local-path> [--out reports] [--open]
+    python cli.py scan <github-repo-url> [--out reports] [--open]
 
 Examples:
     python cli.py scan https://github.com/pallets/flask.git
-    python cli.py scan .                       # scan the current project
-    python cli.py scan ../my-service --out out --open
+    python cli.py scan https://github.com/owner/repo.git --out out --open
 
 Triggering is CLI-first today; the same `run_scan()` entry point is reused by
 the FastAPI server, so adding a scheduler later is just another caller.
@@ -98,8 +97,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AI-powered full-repository code review.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    scan = sub.add_parser("scan", help="Scan a repository (URL or local path).")
-    scan.add_argument("source", help="GitHub URL or local directory path.")
+    scan = sub.add_parser("scan", help="Scan a GitHub repository.")
+    scan.add_argument("source", help="GitHub repository URL.")
     scan.add_argument("--out", default="reports", help="Directory to write reports into.")
     scan.add_argument("--open", action="store_true", help="Open the HTML report when done.")
 

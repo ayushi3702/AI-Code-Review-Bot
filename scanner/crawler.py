@@ -1,7 +1,7 @@
-"""Repo crawler: turn a GitHub URL or local path into a clean list of source files.
+"""Repo crawler: turn a GitHub URL into a clean list of source files.
 
 Two jobs:
-  1. Acquire the code — `git clone` a URL into a temp workspace, or read a local dir.
+  1. Acquire the code — `git clone` the GitHub URL into a temp workspace.
   2. Filter aggressively — skip vendored deps, binaries, lockfiles, generated code.
      This protects the embedding budget: indexing `node_modules` is pure waste.
 """
@@ -68,28 +68,27 @@ def _is_git_url(source: str) -> bool:
 
 
 def acquire_repo(source: str, scan_id: str) -> tuple[str, str, bool]:
-    """Return (local_root, repo_name, is_temp_clone).
+    """Clone the GitHub `source` under SCAN_WORKSPACE_DIR/<scan_id>.
 
-    If `source` is a URL we clone it under SCAN_WORKSPACE_DIR/<scan_id>.
-    If it's a local path we use it in place (is_temp_clone=False).
+    Returns (local_root, repo_name, is_temp_clone). Only GitHub/remote git URLs
+    are supported — local filesystem paths are rejected.
     """
-    if _is_git_url(source):
-        from git import Repo
+    if not _is_git_url(source):
+        raise ValueError(
+            "Only GitHub repository URLs are supported (e.g. "
+            "https://github.com/owner/repo.git)."
+        )
 
-        dest = os.path.join(SCAN_WORKSPACE_DIR, scan_id)
-        os.makedirs(SCAN_WORKSPACE_DIR, exist_ok=True)
-        if os.path.exists(dest):
-            shutil.rmtree(dest, ignore_errors=True)
-        logger.info("Cloning %s → %s", source, dest)
-        Repo.clone_from(source, dest, depth=1)
-        repo_name = source.rstrip("/").split("/")[-1].removesuffix(".git")
-        return dest, repo_name, True
+    from git import Repo
 
-    local_root = os.path.abspath(source)
-    if not os.path.isdir(local_root):
-        raise ValueError(f"Local path is not a directory: {local_root}")
-    repo_name = os.path.basename(local_root.rstrip(os.sep)) or "repo"
-    return local_root, repo_name, False
+    dest = os.path.join(SCAN_WORKSPACE_DIR, scan_id)
+    os.makedirs(SCAN_WORKSPACE_DIR, exist_ok=True)
+    if os.path.exists(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+    logger.info("Cloning %s → %s", source, dest)
+    Repo.clone_from(source, dest, depth=1)
+    repo_name = source.rstrip("/").split("/")[-1].removesuffix(".git")
+    return dest, repo_name, True
 
 
 def _load_gitignore(root: str) -> pathspec.PathSpec | None:

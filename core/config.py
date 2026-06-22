@@ -35,6 +35,24 @@ EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "azure").lower()
 HF_EMBEDDING_MODEL = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 
+# ── GitHub OAuth (login + push/PR to remote repos) ───────────────────────────
+# Register an OAuth App at https://github.com/settings/developers with the
+# callback URL below, then set the client id/secret in your .env.
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
+# Routed through the Vite dev proxy so the whole flow stays same-origin and the
+# session cookie is shared with the frontend (localhost is port-agnostic).
+GITHUB_OAUTH_CALLBACK = os.getenv(
+    "GITHUB_OAUTH_CALLBACK", "http://localhost:5173/api/auth/github/callback"
+)
+GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "repo")
+# Where to send the browser after a successful login.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+SESSION_COOKIE = os.getenv("SESSION_COOKIE", "crb_session")
+GITHUB_OAUTH_ENABLED = bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)
+
+
+
 @functools.lru_cache(maxsize=4)
 def get_chat_llm(max_tokens: int = 4000, json_mode: bool = True):
     """Return a cached AzureChatOpenAI client.

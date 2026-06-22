@@ -10,6 +10,7 @@ severity, so a viewer gets a one-glance verdict before reading details.
 from __future__ import annotations
 import datetime
 import html
+import json
 import logging
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -212,6 +213,7 @@ async def repo_report_agent(state: ScanState) -> dict:
             scan.finding_count = len(findings)
             scan.score = score
             scan.grade = grade
+            scan.file_list = json.dumps(state.file_index or [])
             scan.report_markdown = markdown
             scan.report_html = html_doc
             scan.finished_at = datetime.datetime.utcnow()
