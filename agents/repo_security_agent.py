@@ -45,3 +45,4 @@ async def repo_security_agent(state: ScanState) -> dict:
     Returns:
         Dict with ``'findings'`` and ``'completed_agents'`` keys for LangGraph.
     """
+    return await run_retrieval_agent("security", _SYSTEM, _PHRASES, state)

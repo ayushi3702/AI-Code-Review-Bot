@@ -95,7 +95,7 @@ with code `2` if any **high**-severity issue is found, so it can gate CI.
 
 ```bash
 # Terminal 1 — backend
-uvicorn api.server:app --reload --port 8000
+uvicorn api.server:app --reload --port 8000 --reload-dir agents --reload-dir api --reload-dir core --reload-dir scanner
 
 # Terminal 2 — frontend
 cd frontend

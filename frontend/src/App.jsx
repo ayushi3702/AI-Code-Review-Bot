@@ -244,7 +244,7 @@ export default function App() {
 
   async function onLogout() {
     await logout();
-    setAuth({ authenticated: false });
+    setAuth((prev) => ({ authenticated: false, oauth_enabled: prev.oauth_enabled }));
     if (scan?.status === "done") {
       getAccess(scan.scan_id).then(setAccess).catch(() => {});
     }

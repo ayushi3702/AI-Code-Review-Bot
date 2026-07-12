@@ -43,3 +43,4 @@ async def repo_quality_agent(state: ScanState) -> dict:
     Returns:
         Dict with ``'findings'`` and ``'completed_agents'`` keys for LangGraph.
     """
+    return await run_retrieval_agent("quality", _SYSTEM, _PHRASES, state)
