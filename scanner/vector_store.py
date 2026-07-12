@@ -102,20 +102,22 @@ class VectorStore:
         return total
 
     # ── Retrieval ────────────────────────────────────────────────────────────
-    def query(self, text: str, top_k: int | None = None) -> list[RetrievedChunk]:        """Retrieve the top-k most semantically similar chunks for a query phrase.
+    def query(self, text: str, top_k: int | None = None) -> list[RetrievedChunk]:
+        """Retrieve the top-k most semantically similar chunks for a query phrase.
 
         Embeds the query text and performs an approximate nearest-neighbour
-        search using ChromaDB’s HNSW index (cosine distance space).
+        search using ChromaDB's HNSW index (cosine distance space).
 
         Args:
-            text:  Natural-language query phrase (e.g. ``"SQL query raw string""").
+            text:  Natural-language query phrase (e.g. ``'SQL query raw string'``).
             top_k: Number of results to return; defaults to
                    :data:`~core.config.RETRIEVAL_TOP_K`.
 
         Returns:
             List of :class:`RetrievedChunk` objects ordered by ascending cosine
             distance (most similar first).
-        """        top_k = top_k or RETRIEVAL_TOP_K
+        """
+        top_k = top_k or RETRIEVAL_TOP_K
         vector = self._embeddings.embed_query(text)
         res = self._collection.query(
             query_embeddings=[vector],

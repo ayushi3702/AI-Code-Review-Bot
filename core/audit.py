@@ -71,6 +71,11 @@ def setup_logging(level: int = logging.INFO) -> None:
         return  # already configured
     root.setLevel(level)
 
+    # Silence noisy third-party loggers that flood the audit log with
+    # internal housekeeping messages unrelated to application behaviour.
+    logging.getLogger("watchfiles").setLevel(logging.WARNING)
+    logging.getLogger("watchfiles.main").setLevel(logging.WARNING)
+
     # ── Console ──────────────────────────────────────────────────────────────
     console = logging.StreamHandler()
     console.setFormatter(_formatter)

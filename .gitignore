@@ -8,3 +8,4 @@ reports/
 frontend/node_modules/
 frontend/dist/
 .env
+logs/
