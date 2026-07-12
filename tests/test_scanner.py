@@ -5,10 +5,12 @@ no Azure/OpenAI calls, so they run offline in CI.
 """
 from __future__ import annotations
 import os
+import sys
+from types import SimpleNamespace
 
 from scanner.crawler import crawl, EXT_LANGUAGE, EXCLUDED_DIRS
 from scanner.chunker import chunk_file, chunk_files
-from scanner.crawler import SourceFile
+from scanner.crawler import SourceFile, acquire_repo
 
 
 # ── Crawler ───────────────────────────────────────────────────────────────────
@@ -43,6 +45,32 @@ def test_crawl_detects_languages(tmp_path):
 def test_excluded_dirs_contains_common_vendors():
     for d in ("node_modules", ".git", "venv", "dist"):
         assert d in EXCLUDED_DIRS
+
+
+def test_acquire_repo_uses_safe_clone_options(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyRepo:
+        @staticmethod
+        def clone_from(source, dest, **kwargs):
+            captured["source"] = source
+            captured["dest"] = dest
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("scanner.crawler.SCAN_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "git", SimpleNamespace(Repo=DummyRepo))
+
+    dest, repo_name, is_temp_clone = acquire_repo(
+        "https://github.com/example/repo.git", "scan-123"
+    )
+
+    assert captured["source"] == "https://github.com/example/repo.git"
+    assert captured["dest"] == str(tmp_path / "scan-123")
+    assert captured["kwargs"]["allow_unsafe_options"] is True
+    assert captured["kwargs"]["multi_options"] == ["--depth=1", "-c", "core.longpaths=true"]
+    assert repo_name == "repo"
+    assert is_temp_clone is True
+    assert dest == str(tmp_path / "scan-123")
 
 
 # ── Chunker ───────────────────────────────────────────────────────────────────
