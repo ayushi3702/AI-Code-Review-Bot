@@ -64,14 +64,41 @@ class SourceFile:
 
 
 def _is_git_url(source: str) -> bool:
+    """Return ``True`` if ``source`` looks like a remote Git URL.
+
+    Accepts ``http://``, ``https://``, and ``git@`` prefixes, as well as any
+    string ending with ``.git``.
+
+    Args:
+        source: Repository source string to test.
+    """
     return source.startswith(("http://", "https://", "git@")) or source.endswith(".git")
 
 
 def acquire_repo(source: str, scan_id: str) -> tuple[str, str, bool]:
-    """Clone the GitHub `source` under SCAN_WORKSPACE_DIR/<scan_id>.
+    """Obtain a local copy of the repository to crawl.
 
-    Returns (local_root, repo_name, is_temp_clone). Only GitHub/remote git URLs
-    are supported — local filesystem paths are rejected.
+    Clones the remote GitHub URL into
+    ``<SCAN_WORKSPACE_DIR>/<scan_id>/`` with ``depth=1`` (shallow clone) to
+    minimise download time.  Any pre-existing directory at that path is removed
+    before cloning to guarantee a clean working tree.
+
+    Args:
+        source:  GitHub repository URL (HTTPS or SSH).
+        scan_id: Scan ID used as the destination subdirectory name.
+
+    Returns:
+        A three-tuple ``(local_root, repo_name, is_temp_clone)``:
+
+        - ``local_root``    — absolute path to the cloned directory.
+        - ``repo_name``     — repository name derived from the URL
+                             (last path component, ``.git`` suffix removed).
+        - ``is_temp_clone`` — always ``True`` for remote URLs; used by the
+                             orchestrator to decide whether to delete the clone
+                             after indexing.
+
+    Raises:
+        ValueError: If ``source`` is not a recognised remote Git URL.
     """
     if not _is_git_url(source):
         raise ValueError(
@@ -85,25 +112,61 @@ def acquire_repo(source: str, scan_id: str) -> tuple[str, str, bool]:
     os.makedirs(SCAN_WORKSPACE_DIR, exist_ok=True)
     if os.path.exists(dest):
         shutil.rmtree(dest, ignore_errors=True)
-    logger.info("Cloning %s → %s", source, dest)
-    Repo.clone_from(source, dest, depth=1)
+    logger.info("Cloning %s → %s (depth=1)", source, dest)
+    try:
+        Repo.clone_from(source, dest, depth=1)
+    except Exception as e:
+        logger.error("Failed to clone repository %s: %s", source, e, exc_info=True)
+        raise
     repo_name = source.rstrip("/").split("/")[-1].removesuffix(".git")
     return dest, repo_name, True
 
 
 def _load_gitignore(root: str) -> pathspec.PathSpec | None:
+    """Load and parse the ``.gitignore`` file at the repository root.
+
+    Args:
+        root: Absolute path to the repository root directory.
+
+    Returns:
+        A compiled :class:`pathspec.PathSpec` on success, or ``None`` if no
+        ``.gitignore`` file exists or it cannot be read.
+    """
     gi = os.path.join(root, ".gitignore")
     if not os.path.isfile(gi):
         return None
     try:
         with open(gi, "r", encoding="utf-8", errors="ignore") as f:
             return pathspec.PathSpec.from_lines("gitwildmatch", f.readlines())
-    except Exception:
+    except Exception as e:
+        logger.warning("Could not load .gitignore from %s: %s", gi, e)
         return None
 
 
 def crawl(root: str) -> list[SourceFile]:
-    """Walk `root` and return the source files worth indexing."""
+    """Walk the repository tree and return every source file worth indexing.
+
+    Applies several layers of filtering to avoid polluting the vector store
+    with noise:
+
+    - **Directory exclusions** — ``node_modules``, ``.git``, ``__pycache__``,
+      ``dist``, ``build``, and other well-known non-source directories.
+    - **Extension filter** — only files with extensions in :data:`EXT_LANGUAGE`
+      are included (Python, JS/TS, Go, Java, Ruby, PHP, C/C++, Rust, etc.).
+    - **Pattern exclusions** — lock files, minified bundles, source maps,
+      generated protobuf stubs, and TypeScript declaration files.
+    - **Gitignore** — files matched by the repo’s ``.gitignore`` are skipped.
+    - **Size gate** — files larger than :data:`~core.config.MAX_FILE_SIZE_KB`
+      KB or empty files are skipped.
+    - **Encoding** — files that cannot be decoded as UTF-8 (binary or exotic
+      encodings) are skipped.
+
+    Args:
+        root: Absolute path to the repository root.
+
+    Returns:
+        List of :class:`SourceFile` objects ready for chunking.
+    """
     gitignore = _load_gitignore(root)
     skip_spec = pathspec.PathSpec.from_lines("gitwildmatch", EXCLUDED_FILE_PATTERNS)
     max_bytes = MAX_FILE_SIZE_KB * 1024
@@ -131,13 +194,20 @@ def crawl(root: str) -> list[SourceFile]:
                 size = os.path.getsize(abs_path)
             except OSError:
                 continue
-            if size > max_bytes or size == 0:
+            if size == 0:
+                continue
+            if size > max_bytes:
+                logger.warning(
+                    "Skipping oversized file %s (%d KB > limit %d KB)",
+                    rel_path, size // 1024, MAX_FILE_SIZE_KB,
+                )
                 continue
 
             try:
                 with open(abs_path, "r", encoding="utf-8") as f:
                     content = f.read()
-            except (UnicodeDecodeError, OSError):
+            except (UnicodeDecodeError, OSError) as e:
+                logger.warning("Skipping unreadable file %s: %s", rel_path, e)
                 continue  # binary or unreadable — skip
 
             files.append(SourceFile(
@@ -153,5 +223,15 @@ def crawl(root: str) -> list[SourceFile]:
 
 
 def cleanup_clone(scan_id: str) -> None:
+    """Remove the temporary clone directory created by :func:`acquire_repo`.
+
+    Called by the orchestrator after the vector store is fully populated, since
+    the agents only query the vector store and no longer need the raw files.
+    Uses ``ignore_errors=True`` so a partial or missing directory does not
+    raise an exception.
+
+    Args:
+        scan_id: The scan ID whose clone directory should be deleted.
+    """
     dest = os.path.join(SCAN_WORKSPACE_DIR, scan_id)
     shutil.rmtree(dest, ignore_errors=True)

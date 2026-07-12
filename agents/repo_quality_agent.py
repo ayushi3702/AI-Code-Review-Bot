@@ -29,4 +29,17 @@ _SYSTEM = (
 
 
 async def repo_quality_agent(state: ScanState) -> dict:
-    return await run_retrieval_agent("quality", _SYSTEM, _PHRASES, state)
+    """LangGraph node: run the code-quality specialist agent for one scan.
+
+    Retrieves code chunks associated with exception handling, dead code,
+    duplicated logic, magic numbers, and test coverage, then asks the model to
+    flag swallowed exceptions, likely bugs, unreachable code, copy-pasted logic,
+    overly complex functions, and untested code paths.
+
+    Args:
+        state: Current :class:`~core.state.ScanState` with an indexed vector
+               store populated by the indexing stage.
+
+    Returns:
+        Dict with ``'findings'`` and ``'completed_agents'`` keys for LangGraph.
+    """

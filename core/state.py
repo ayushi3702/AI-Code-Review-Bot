@@ -1,3 +1,12 @@
+"""Shared Pydantic state models for the repo-wide deep-scan pipeline.
+
+ScanFinding  — a single issue raised by one specialist agent.
+ScanState    — the mutable pipeline state that flows through LangGraph.
+               LangGraph passes this object from node to node; the
+               ``operator.add`` reducer on list fields lets the four parallel
+               agents merge their findings and errors safely without
+               overwriting each other.
+"""
 from __future__ import annotations
 from typing import Annotated
 from pydantic import BaseModel, Field
@@ -7,6 +16,19 @@ import operator
 # ── Repo-wide deep-scan state (full-repository review mode) ───────────────────
 
 class ScanFinding(BaseModel):
+    """A single finding produced by one specialist review agent.
+
+    Attributes:
+        agent:          Which agent raised the issue — ``'security'``,
+                        ``'performance'``, ``'architecture'``, or ``'quality'``.
+        severity:       Impact level — ``'high'``, ``'medium'``, or ``'low'``.
+        file:           Repo-relative path to the affected source file.
+        line:           Optional 1-based line number within the file.
+        title:          Short headline shown in the report summary.
+        detail:         Full explanation of why the issue matters.
+        recommendation: Concrete, actionable fix suggestion.
+        code_snippet:   Optional code excerpt illustrating the problem.
+    """
     agent: str             # security | performance | architecture | quality
     severity: str          # high | medium | low
     file: str
@@ -18,6 +40,19 @@ class ScanFinding(BaseModel):
 
 
 class ScanState(BaseModel):
+    """Mutable pipeline state shared across all LangGraph nodes for one scan.
+
+    Fields are populated in three stages:
+
+    1. **Indexing**  — ``scan_id``, ``repo_source``, ``repo_name``,
+                       ``file_count``, ``chunk_count``, ``languages``,
+                       ``file_index``, ``collection_name``.
+    2. **Analysis**  — ``findings``, ``completed_agents``, ``errors``.
+                       All three use ``operator.add`` so the four parallel
+                       agents can append without overwriting each other.
+    3. **Reporting** — ``score``, ``grade``, ``report_markdown``,
+                       ``report_html``.
+    """
     # Input / identity
     scan_id: str = ""
     repo_source: str = ""             # URL or local path

@@ -23,11 +23,29 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agents.repo_orchestrator import run_scan
+from core.audit import setup_logging
+
+setup_logging()
 
 console = Console()
 
 
 def _write_reports(repo_name: str, markdown: str, html_doc: str, out_dir: str) -> tuple[str, str]:
+    """Write the Markdown and HTML reports to the output directory.
+
+    Creates the directory if it does not exist, then writes both files with a
+    timestamp-based name so successive scans of the same repo do not overwrite
+    each other.
+
+    Args:
+        repo_name: Short repository name used as the filename prefix.
+        markdown:  Markdown report string to write.
+        html_doc:  HTML report string to write.
+        out_dir:   Directory path to write the files into.
+
+    Returns:
+        A ``(md_path, html_path)`` tuple of absolute file paths.
+    """
     os.makedirs(out_dir, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     base = f"{repo_name}-{stamp}"
@@ -41,6 +59,19 @@ def _write_reports(repo_name: str, markdown: str, html_doc: str, out_dir: str) -
 
 
 def _summary_table(state) -> Table:
+    """Build a Rich :class:`~rich.table.Table` summarising findings by agent.
+
+    Displays a row per agent (security, performance, architecture, quality)
+    with the number of findings each produced, plus a totals row broken down
+    by severity (high/medium/low).
+
+    Args:
+        state: The completed :class:`~core.state.ScanState` returned by
+               :func:`~agents.repo_orchestrator.run_scan`.
+
+    Returns:
+        A configured :class:`rich.table.Table` ready to print to the console.
+    """
     counts = {"high": 0, "medium": 0, "low": 0}
     for f in state.findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
@@ -60,6 +91,21 @@ def _summary_table(state) -> Table:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    """Execute a single scan and print the results to the terminal.
+
+    Runs :func:`~agents.repo_orchestrator.run_scan` with a Rich spinner, then
+    prints the health grade, summary table, and report file paths.  Optionally
+    opens the HTML report in the system browser.
+
+    Args:
+        args: Parsed :class:`argparse.Namespace` with ``source``, ``out``, and
+              ``open`` attributes.
+
+    Returns:
+        Exit code: ``0`` on success with no high-severity findings, ``1`` if the
+        scan itself failed, ``2`` if any high-severity findings were found (for
+        use as a CI gate).
+    """
     console.print(Panel.fit(f"[bold]AI Code Review Platform[/bold]\nScanning: [cyan]{args.source}[/cyan]"))
 
     with console.status("[bold green]Working…[/bold green]") as status:
@@ -94,6 +140,15 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    """CLI entry point — parse arguments and run the appropriate sub-command.
+
+    Currently supports a single ``scan`` sub-command::
+
+        python cli.py scan <github-repo-url> [--out DIR] [--open]
+
+    Calls :func:`asyncio.run` to execute the async scan pipeline and forwards
+    the integer exit code to :func:`sys.exit`.
+    """
     parser = argparse.ArgumentParser(description="AI-powered full-repository code review.")
     sub = parser.add_subparsers(dest="command", required=True)
 

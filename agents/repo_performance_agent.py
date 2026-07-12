@@ -29,4 +29,17 @@ _SYSTEM = (
 
 
 async def repo_performance_agent(state: ScanState) -> dict:
-    return await run_retrieval_agent("performance", _SYSTEM, _PHRASES, state)
+    """LangGraph node: run the performance specialist agent for one scan.
+
+    Retrieves code chunks related to loops, database queries, I/O patterns, and
+    data-structure usage, then asks the model to flag algorithmic inefficiencies,
+    N+1 query patterns, blocking I/O inside async code, unbounded memory growth,
+    missing pagination, and repeated expensive computation that should be cached.
+
+    Args:
+        state: Current :class:`~core.state.ScanState` with an indexed vector
+               store populated by the indexing stage.
+
+    Returns:
+        Dict with ``'findings'`` and ``'completed_agents'`` keys for LangGraph.
+    """

@@ -34,6 +34,19 @@ AGENT_LABEL = {
 
 
 def _dedupe(findings: list[ScanFinding]) -> list[ScanFinding]:
+    """Remove duplicate findings from the merged agent output.
+
+    Since four agents run concurrently and can each query overlapping code
+    regions, the same issue may be reported more than once (same file, line,
+    and title).  Duplicates are identified by the ``(file, line, title[:50])``
+    triple and only the first occurrence is kept.
+
+    Args:
+        findings: Raw merged list from all four agents.
+
+    Returns:
+        De-duplicated list preserving the original ordering.
+    """
     seen: set[tuple] = set()
     out: list[ScanFinding] = []
     for f in findings:
@@ -45,6 +58,26 @@ def _dedupe(findings: list[ScanFinding]) -> list[ScanFinding]:
 
 
 def _score(findings: list[ScanFinding], file_count: int = 0) -> tuple[int, str]:
+    """Compute a 0–100 health score and an A–F grade for the scanned repository.
+
+    Rather than penalising a repo purely for the raw count of findings (which
+    would unfairly punish larger codebases), the score is based on the
+    *weighted density* of issues per file::
+
+        density = sum(SEVERITY_WEIGHT[f.severity] for f in findings) / file_count
+        penalty = min(100, density * 6)   # 6 pts per weighted-issue-per-file
+        score   = max(0, round(100 - penalty))
+
+    Grade thresholds: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60, F < 60.
+
+    Args:
+        findings:   De-duplicated list of findings.
+        file_count: Total number of source files in the repo (used for density
+                    normalisation; clamped to 1 to avoid division by zero).
+
+    Returns:
+        A ``(score, grade)`` tuple, e.g. ``(87, 'B')``.
+    """
     # Normalize by repo size so large repos aren't punished just for being big:
     # we score the *density* of weighted issues per file rather than a raw sum.
     weighted = sum(SEVERITY_WEIGHT.get(f.severity, 3) for f in findings)
@@ -62,6 +95,14 @@ def _score(findings: list[ScanFinding], file_count: int = 0) -> tuple[int, str]:
 
 
 def _counts(findings: list[ScanFinding]) -> dict:
+    """Count findings by severity level.
+
+    Args:
+        findings: List of :class:`~core.state.ScanFinding` objects.
+
+    Returns:
+        A dict ``{'high': n, 'medium': n, 'low': n}``.
+    """
     c = {"high": 0, "medium": 0, "low": 0}
     for f in findings:
         c[f.severity] = c.get(f.severity, 0) + 1
@@ -71,6 +112,22 @@ def _counts(findings: list[ScanFinding]) -> dict:
 # ── Markdown ─────────────────────────────────────────────────────────────────
 
 def build_markdown(state: ScanState, findings: list[ScanFinding], score: int, grade: str) -> str:
+    """Render the scan results as a Markdown report string.
+
+    Produces a human-readable report suitable for display in the CLI, pasting
+    into a GitHub comment, or saving to disk.  Findings are grouped by agent
+    and sorted by severity within each group.
+
+    Args:
+        state:    Completed :class:`~core.state.ScanState` for metadata
+                  (repo name, file count, languages, etc.).
+        findings: De-duplicated, sorted list of findings.
+        score:    Computed health score (0–100).
+        grade:    Letter grade (A–F).
+
+    Returns:
+        A Markdown string starting with a heading and health summary.
+    """
     counts = _counts(findings)
     lines = [
         f"# 🔍 Code Review Report — `{state.repo_name}`",
@@ -176,6 +233,23 @@ _HTML_TEMPLATE = Template("""<!doctype html>
 
 
 def build_html(state: ScanState, findings: list[ScanFinding], score: int, grade: str) -> str:
+    """Render the scan results as a standalone, self-contained HTML report.
+
+    Uses a Jinja2 template with embedded CSS to produce a dark-themed page that
+    works as a static file (no external dependencies except Google Fonts).  The
+    report groups findings by agent in collapsible ``<details>`` sections and
+    colour-codes them by severity.
+
+    Args:
+        state:    Completed :class:`~core.state.ScanState` for metadata.
+        findings: De-duplicated, sorted list of findings.
+        score:    Computed health score (0–100).
+        grade:    Letter grade (A–F).
+
+    Returns:
+        A complete HTML document string ready to be written to a ``.html`` file
+        or served directly from the ``/api/scan/{id}/report.html`` endpoint.
+    """
     by_agent: dict[str, list[ScanFinding]] = {}
     for f in sorted(findings, key=lambda x: SEVERITY_ORDER.get(x.severity, 3)):
         by_agent.setdefault(f.agent, []).append(f)
@@ -199,8 +273,30 @@ def build_html(state: ScanState, findings: list[ScanFinding], score: int, grade:
 # ── Agent entry point ─────────────────────────────────────────────────────────
 
 async def repo_report_agent(state: ScanState) -> dict:
+    """LangGraph node: compile findings into reports and persist the final scan record.
+
+    This node is the fan-in point of the pipeline — it only executes once all
+    four specialist agents have completed.  Its responsibilities are:
+
+    1. De-duplicate findings from all four agents.
+    2. Compute the health score and letter grade.
+    3. Render Markdown and HTML reports.
+    4. Persist the final state (findings, score, grade, reports) to the database.
+
+    Args:
+        state: :class:`~core.state.ScanState` with the merged findings from all
+               four parallel agents.
+
+    Returns:
+        Dict containing ``report_markdown``, ``report_html``, ``score``,
+        ``grade``, and ``completed_agents`` keys for LangGraph.
+    """
     db = SessionLocal()
     try:
+        logger.info(
+            "report agent started — scan_id=%s raw_findings=%d",
+            state.scan_id, len(state.findings),
+        )
         findings = _dedupe(state.findings)
         score, grade = _score(findings, state.file_count)
         markdown = build_markdown(state, findings, score, grade)
@@ -224,8 +320,13 @@ async def repo_report_agent(state: ScanState) -> dict:
                     recommendation=f.recommendation, code_snippet=f.code_snippet,
                 ))
             db.commit()
+        else:
+            logger.warning("report agent: scan row not found in DB — scan_id=%s", state.scan_id)
 
-        logger.info("[report] score=%d grade=%s findings=%d", score, grade, len(findings))
+        logger.info(
+            "report agent completed — scan_id=%s score=%d grade=%s findings=%d",
+            state.scan_id, score, grade, len(findings),
+        )
         return {
             "report_markdown": markdown,
             "report_html": html_doc,
@@ -234,7 +335,10 @@ async def repo_report_agent(state: ScanState) -> dict:
             "completed_agents": ["report"],
         }
     except Exception as e:
-        logger.error("[report] %s", e)
+        logger.error(
+            "report agent failed — scan_id=%s: %s",
+            state.scan_id, e, exc_info=True,
+        )
         return {"errors": [f"report: {e}"]}
     finally:
         db.close()

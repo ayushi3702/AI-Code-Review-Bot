@@ -30,4 +30,18 @@ _SYSTEM = (
 
 
 async def repo_security_agent(state: ScanState) -> dict:
-    return await run_retrieval_agent("security", _SYSTEM, _PHRASES, state)
+    """LangGraph node: run the security specialist agent for one scan.
+
+    Retrieves code chunks that are most likely to contain security-sensitive
+    logic (authentication, input handling, SQL queries, secrets, network calls,
+    file I/O, deserialization) and asks the model to identify exploitable
+    vulnerabilities — injection flaws, broken auth, hardcoded secrets, SSRF,
+    path traversal, weak crypto, and unsafe use of ``eval``/``exec``.
+
+    Args:
+        state: Current :class:`~core.state.ScanState` with an indexed vector
+               store populated by the indexing stage.
+
+    Returns:
+        Dict with ``'findings'`` and ``'completed_agents'`` keys for LangGraph.
+    """

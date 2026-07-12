@@ -37,16 +37,49 @@ _MAX_DUP_PROBES = 40
 
 
 def _build_repo_map(file_index: list[str], languages: dict[str, int]) -> str:
+    """Format the repository’s file tree and language breakdown as a prompt string.
+
+    Provides the architecture agent with a high-level structural overview that
+    it cannot derive from individual code chunks alone.  The listing is capped
+    at 300 entries to keep the prompt token count bounded.
+
+    Args:
+        file_index: Sorted list of repo-relative file paths.
+        languages:  Mapping of language label → file count from the crawl stage.
+
+    Returns:
+        A two-section string: ``Languages (files per language): ...`` followed
+        by an indented ``File map:`` listing.
+    """
     lang_line = ", ".join(f"{k}:{v}" for k, v in sorted(languages.items()))
     listing = "\n".join(f"  {p}" for p in sorted(file_index)[:300])
     return f"Languages (files per language): {lang_line}\n\nFile map:\n{listing}"
 
 
 def _find_duplicates(store: VectorStore) -> list[str]:
-    """Probe a sample of chunks for near-identical twins in other files."""
+    """Probe a sample of chunks for near-identical twins in other files.
+
+    Uses the vector store’s cosine similarity to find chunk pairs whose
+    distance is below :data:`_DUP_DISTANCE_THRESHOLD`.  A near-zero cosine
+    distance between chunks in *different* files is a strong signal of
+    copy-pasted logic.
+
+    The probe is sampled (step = ``total_chunks // _MAX_DUP_PROBES``) rather
+    than exhaustive to keep latency bounded on large repos.
+
+    Args:
+        store: The :class:`~scanner.vector_store.VectorStore` for the current scan.
+
+    Returns:
+        A list of human-readable hint strings like
+        ``"Near-duplicate code: foo.py ↔ bar.py"``, capped at 20 pairs.
+    """
     try:
         raw = store._collection.get(include=["documents", "metadatas"])
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "architecture agent: could not retrieve chunks for duplication analysis: %s", e,
+        )
         return []
 
     docs = raw.get("documents") or []
@@ -73,7 +106,35 @@ def _find_duplicates(store: VectorStore) -> list[str]:
 
 
 async def repo_architecture_agent(state: ScanState) -> dict:
+    """LangGraph node: run the architecture specialist agent for one scan.
+
+    Unlike the other agents, this one cannot use the generic
+    :func:`~agents._scan_common.run_retrieval_agent` helper because it needs to
+    supply additional structural context — a file-tree map and duplication hints
+    — that are built from repository-level data rather than from retrieval
+    phrases alone.
+
+    Extra context injected into the prompt:
+
+    - **Repo map** — language counts and a full file listing (capped at 300
+      entries) to help the model reason about module structure and organisation.
+    - **Duplication hints** — file pairs whose chunks have near-zero cosine
+      distance in the vector store, indicating likely copy-pasted code.
+    - **Coupling chunks** — code retrieved for import, dependency, and
+      global-state phrases to expose tight coupling and circular imports.
+
+    Args:
+        state: Current :class:`~core.state.ScanState` with an indexed vector
+               store populated by the indexing stage.
+
+    Returns:
+        Dict with ``'findings'`` and ``'completed_agents'`` keys for LangGraph.
+    """
     started = datetime.datetime.utcnow()
+    logger.info(
+        "architecture agent started — scan_id=%s files=%d",
+        state.scan_id, len(state.file_index),
+    )
     db = SessionLocal()
     run = AgentRun(scan_id=state.scan_id, agent_name="architecture", started_at=started)
     db.add(run)
@@ -83,6 +144,10 @@ async def repo_architecture_agent(state: ScanState) -> dict:
         store = VectorStore(state.collection_name)
         repo_map = _build_repo_map(state.file_index, state.languages)
         dup_hints = _find_duplicates(store)
+        logger.info(
+            "architecture agent: found %d duplication hints — scan_id=%s",
+            len(dup_hints), state.scan_id,
+        )
         coupling_chunks = store.query_many([
             "import module dependency package",
             "global state shared singleton configuration",
@@ -110,13 +175,19 @@ async def repo_architecture_agent(state: ScanState) -> dict:
         run.duration_ms = int((run.finished_at - started).total_seconds() * 1000)
         db.commit()
 
-        logger.info("[architecture] produced %d findings (%d dup hints)", len(findings), len(dup_hints))
+        logger.info(
+            "architecture agent completed — %d findings (%d dup hints) in %dms — scan_id=%s",
+            len(findings), len(dup_hints), run.duration_ms, state.scan_id,
+        )
         return {"findings": findings, "completed_agents": ["architecture"]}
 
     except Exception as e:
         run.status = "failed"
         db.commit()
-        logger.error("[architecture] %s", e)
+        logger.error(
+            "architecture agent failed — scan_id=%s: %s",
+            state.scan_id, e, exc_info=True,
+        )
         return {"errors": [f"architecture: {e}"]}
     finally:
         db.close()

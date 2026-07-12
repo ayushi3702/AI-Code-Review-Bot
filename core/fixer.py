@@ -74,7 +74,18 @@ _COMMENT_PREFIXES = ("#", "//", "--", "/*", "*", "*/", ";", "<!--", "-->")
 
 
 def _strip_noise(code: str) -> str:
-    """Return code with blank and pure-comment lines removed, for comparison."""
+    """Return ``code`` with blank lines and pure-comment lines removed.
+
+    Used by :func:`_is_comment_only_change` to detect whether two code snippets
+    differ only in comments or whitespace, which would make a proposed fix
+    non-committable (a comment-only edit is classified as a suggestion instead).
+
+    Args:
+        code: Source code string to strip.
+
+    Returns:
+        Multi-line string with blank and comment-only lines removed.
+    """
     out = []
     for line in code.splitlines():
         s = line.strip()
@@ -85,7 +96,21 @@ def _strip_noise(code: str) -> str:
 
 
 def _is_comment_only_change(original: str, suggested: str) -> bool:
-    """True if original and suggested differ only in comments/whitespace."""
+    """Return ``True`` if ``original`` and ``suggested`` differ only in comments or whitespace.
+
+    A change that only adds, removes, or rewrites comments without touching
+    executable code is not a safe automatic fix — it would silently overwrite
+    existing comments and confuse reviewers.  Such changes are reclassified as
+    advisory suggestions.
+
+    Args:
+        original:  The verbatim code snippet from the file.
+        suggested: The model-proposed replacement snippet.
+
+    Returns:
+        ``True`` when stripping comments and blank lines from both sides
+        produces identical text.
+    """
     return _strip_noise(original) == _strip_noise(suggested)
 
 
@@ -123,6 +148,14 @@ def _window_around(content: str, line: int | None, budget: int) -> tuple[str, in
 
 
 def _is_git_url(source: str) -> bool:
+    """Return ``True`` if ``source`` looks like a remote Git URL.
+
+    Accepts ``http://``, ``https://``, ``git@`` prefixes, and any string ending
+    with ``.git``.
+
+    Args:
+        source: The repository source string to test.
+    """
     return source.startswith(("http://", "https://", "git@")) or source.endswith(".git")
 
 
@@ -148,12 +181,27 @@ def ensure_worktree(scan: Scan, token: str | None = None) -> str:
     from git import Repo
     os.makedirs(SCAN_WORKSPACE_DIR, exist_ok=True)
     auth_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
-    logger.info("Cloning %s/%s for commit worktree", owner, repo)
-    Repo.clone_from(auth_url, dest)
+    logger.info("Cloning %s/%s for commit worktree into %s", owner, repo, dest)
+    try:
+        Repo.clone_from(auth_url, dest)
+    except Exception as e:
+        logger.error("Failed to clone %s/%s for commit worktree: %s", owner, repo, e, exc_info=True)
+        raise
     return dest
 
 
 def _build_diff(file: str, original: str, suggested: str) -> str:
+    """Build a unified-diff preview string for a single file change.
+
+    Args:
+        file:      Repo-relative path used as the diff header label.
+        original:  The exact verbatim snippet that will be replaced.
+        suggested: The replacement snippet.
+
+    Returns:
+        A unified diff string (``--- a/file`` / ``+++ b/file`` format) suitable
+        for display in the UI code-review panel.
+    """
     a = original.splitlines(keepends=True)
     b = suggested.splitlines(keepends=True)
     diff = difflib.unified_diff(a, b, fromfile=f"a/{file}", tofile=f"b/{file}")
@@ -185,12 +233,20 @@ def _validate_files(root: str, files: list[str]) -> list[dict]:
             try:
                 compile(text, abs_path, "exec")
             except SyntaxError as e:
+                logger.warning(
+                    "Syntax validation: Python syntax error in %s at line %d: %s",
+                    rel, e.lineno, e.msg,
+                )
                 breaks.append({"file": rel, "reason": f"Python syntax error: {e.msg} (line {e.lineno})"})
         elif ext in _NODE_EXTS and node:
             proc = subprocess.run([node, "--check", abs_path],
                                   capture_output=True, text=True)
             if proc.returncode != 0:
                 msg = (proc.stderr or proc.stdout or "syntax error").strip().splitlines()[-1:]
+                logger.warning(
+                    "Syntax validation: JavaScript syntax error in %s: %s",
+                    rel, "".join(msg),
+                )
                 breaks.append({"file": rel, "reason": f"JS syntax error: {''.join(msg)}"})
     return breaks
 
@@ -203,11 +259,17 @@ def _run_verify_cmd(root: str) -> str | None:
         proc = subprocess.run(VERIFY_CMD, shell=True, cwd=root,
                               capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
+        logger.warning("Verify command timed out after 600s: %s", VERIFY_CMD)
         return f"verify command timed out: {VERIFY_CMD}"
     except Exception as e:  # noqa: BLE001 - surface any launch failure
+        logger.error("Verify command could not launch — %s: %s", VERIFY_CMD, e)
         return f"verify command could not run: {e}"
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-15:]
+        logger.warning(
+            "Verify command failed (exit %d): %s",
+            proc.returncode, VERIFY_CMD,
+        )
         return f"verify command failed (exit {proc.returncode}):\n" + "\n".join(tail)
     return None
 
@@ -228,7 +290,32 @@ def _fix_to_dict(fix: ScanFix) -> dict:
 
 
 async def generate_fix(scan_id: str, finding_id: str, token: str | None = None) -> dict:
-    """Generate (or return cached) a concrete fix for one finding."""
+    """Generate (or return a cached) concrete code fix for one finding.
+
+    Asks the LLM to produce an exact ``(original_code, suggested_code)`` pair
+    for the finding’s file.  The result is classified as:
+
+    - ``'ready'``        — the snippet was located in the file and changes real
+                           executable code; safe to commit.
+    - ``'suggestion'``   — the model’s remedy is advisory or comment-only;
+                           displayed to the developer but not committable.
+    - ``'unapplicable'`` — the snippet could not be found in the file (e.g. the
+                           file changed since the scan).
+
+    Args:
+        scan_id:    ID of the owning scan.
+        finding_id: ID of the :class:`~core.database.ScanFindingRow` to fix.
+        token:      Optional GitHub OAuth token; required when the repo must be
+                    cloned from a remote URL to read the source file.
+
+    Returns:
+        A dict representation of the :class:`~core.database.ScanFix` row,
+        including ``status``, ``diff``, ``explanation``, and ``applicable``.
+
+    Raises:
+        ValueError: If the finding or scan row does not exist, or if the
+                    source file cannot be found in the repo.
+    """
     db = SessionLocal()
     try:
         existing = (
@@ -237,6 +324,10 @@ async def generate_fix(scan_id: str, finding_id: str, token: str | None = None) 
             .first()
         )
         if existing:
+            logger.info(
+                "generate_fix: returning cached fix — finding_id=%s status=%s",
+                finding_id, existing.status,
+            )
             return _fix_to_dict(existing)
 
         finding = db.query(ScanFindingRow).filter(ScanFindingRow.id == finding_id).first()
@@ -245,6 +336,11 @@ async def generate_fix(scan_id: str, finding_id: str, token: str | None = None) 
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if not scan:
             raise ValueError("scan not found")
+
+        logger.info(
+            "generate_fix: scan_id=%s finding_id=%s file=%s title=%r",
+            scan_id, finding_id, finding.file, finding.title,
+        )
 
         root = ensure_worktree(scan, token)
         abs_path = os.path.join(root, finding.file)
@@ -286,9 +382,8 @@ async def generate_fix(scan_id: str, finding_id: str, token: str | None = None) 
         kind = (data.get("kind") or "").strip().lower()
 
         # A fix is committable only when it locates real code AND actually
-        # changes executable code. Advisory output, or edits that merely add
-        # comments without touching code, are treated as non-committable
-        # suggestions — they must never overwrite or remove lines.
+        # changes executable code.  Advisory output, or edits that merely
+        # add/rewrite comments without touching code, are non-committable.
         located = bool(original) and original in content
         comment_only = located and _is_comment_only_change(original, suggested)
         is_fix = kind != "suggestion" and located and not comment_only
@@ -296,8 +391,27 @@ async def generate_fix(scan_id: str, finding_id: str, token: str | None = None) 
         if is_fix:
             status = "ready"
             diff = _build_diff(finding.file, original, suggested)
+            logger.info(
+                "generate_fix: fix ready — finding_id=%s file=%s",
+                finding_id, finding.file,
+            )
         else:
             status = "suggestion" if (kind == "suggestion" or comment_only) else "unapplicable"
+            if comment_only:
+                logger.warning(
+                    "generate_fix: model proposed comment-only edit — classified as suggestion — finding_id=%s",
+                    finding_id,
+                )
+            elif not located:
+                logger.warning(
+                    "generate_fix: snippet not found in file — fix unapplicable — finding_id=%s file=%s",
+                    finding_id, finding.file,
+                )
+            else:
+                logger.warning(
+                    "generate_fix: fix unapplicable (kind=%s) — finding_id=%s",
+                    kind, finding_id,
+                )
             # Never carry a code edit for a non-committable suggestion.
             original = ""
             suggested = ""
@@ -348,6 +462,11 @@ def apply_and_commit(scan_id: str, finding_ids: list[str], message: str,
         scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if not scan:
             raise ValueError("scan not found")
+
+        logger.info(
+            "apply_and_commit: scan_id=%s user=%s fixes=%d mode=%s",
+            scan_id, login or "anonymous", len(finding_ids), mode,
+        )
 
         root = ensure_worktree(scan, token)
 
@@ -423,6 +542,10 @@ def apply_and_commit(scan_id: str, finding_ids: list[str], message: str,
                                   "reason": "no fix generated yet — preview it first"})
 
         if conflicts:
+            logger.warning(
+                "apply_and_commit: %d conflict(s) detected — aborting commit — scan_id=%s",
+                len(conflicts), scan_id,
+            )
             return {"committed": False, "pushed": False, "conflicts": conflicts,
                     "message": "Resolve conflicts (deselect the listed fixes) and try again."}
 
@@ -451,6 +574,10 @@ def apply_and_commit(scan_id: str, finding_ids: list[str], message: str,
         breaks = _validate_files(root, changed_files)
         verify_error = None if breaks else _run_verify_cmd(root)
         if breaks or verify_error:
+            logger.warning(
+                "apply_and_commit: syntax/verify check failed — rolling back — scan_id=%s breaks=%d",
+                scan_id, len(breaks),
+            )
             for abs_path, original in originals.items():
                 with open(abs_path, "w", encoding="utf-8") as fh:
                     fh.write(original)
@@ -472,6 +599,10 @@ def apply_and_commit(scan_id: str, finding_ids: list[str], message: str,
         commit = repo.index.commit(message or "Apply AI code review fixes",
                                    author=actor, committer=actor)
         sha = commit.hexsha
+        logger.info(
+            "apply_and_commit: committed — scan_id=%s sha=%s files=%s mode=%s",
+            scan_id, sha[:8], changed_files, mode,
+        )
 
         for fx in fixes:
             if fx.finding_id in applied:
@@ -496,6 +627,10 @@ def apply_and_commit(scan_id: str, finding_ids: list[str], message: str,
                 pushed = True
             except (GitCommandError, ValueError) as e:
                 push_error = str(e)
+                logger.error(
+                    "apply_and_commit: push failed — scan_id=%s branch=%s: %s",
+                    scan_id, branch_to_push, e,
+                )
 
         if mode == "pr" and pushed:
             title = message or f"AI code review: {len(applied)} fix(es)"
@@ -507,8 +642,13 @@ def apply_and_commit(scan_id: str, finding_ids: list[str], message: str,
             )
             if status in (200, 201):
                 pr_url = payload.get("html_url")
+                logger.info("apply_and_commit: PR opened — %s — scan_id=%s", pr_url, scan_id)
             else:
                 push_error = f"branch pushed but PR could not be opened: {payload.get('message', status)}"
+                logger.warning(
+                    "apply_and_commit: PR could not be opened — scan_id=%s: %s",
+                    scan_id, push_error,
+                )
 
         return {
             "committed": True,

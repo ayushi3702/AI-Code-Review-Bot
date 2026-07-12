@@ -12,6 +12,12 @@ Base = declarative_base()
 
 
 class AgentRun(Base):
+    """Execution record for a single specialist agent within one scan.
+
+    One row is created when the agent starts and updated with timing data and
+    finding count when it finishes.  ``status`` transitions from ``'running'``
+    to either ``'done'`` or ``'failed'``.
+    """
     __tablename__ = "agent_runs"
 
     id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -27,6 +33,14 @@ class AgentRun(Base):
 # ── Repo-wide deep-scan persistence ──────────────────────────────────────────
 
 class Scan(Base):
+    """Top-level scan record tracking the full lifecycle of one repository review.
+
+    Created with ``status='queued'`` when a scan request arrives and updated as
+    the pipeline advances through stages: ``crawl → index → analyze → report``.
+    Stores the final HTML and Markdown reports, health score, and A–F grade once
+    the pipeline completes.  The ``error`` field captures the failure reason when
+    ``status='failed'``.
+    """
     __tablename__ = "scans"
 
     id            = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -48,6 +62,13 @@ class Scan(Base):
 
 
 class ScanFindingRow(Base):
+    """Persisted finding row — one row per issue reported by an agent.
+
+    Mirrors :class:`~core.state.ScanFinding` but lives in the database so the
+    React frontend can fetch findings for a completed scan without rerunning the
+    agents.  ``code_snippet`` carries an optional verbatim extract of the
+    affected code for display in the UI.
+    """
     __tablename__ = "scan_findings"
 
     id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -63,7 +84,16 @@ class ScanFindingRow(Base):
 
 
 class ScanFix(Base):
-    """A concrete, committable code change generated for a single finding."""
+    """A concrete, committable code change generated for a single finding.
+
+    ``status`` lifecycle:
+    - ``'ready'``       — an applicable ``original_code`` → ``suggested_code``
+                          replacement was found and a unified diff produced.
+    - ``'suggestion'``  — the model's remedy is advisory (e.g. “adopt Alembic”)
+                          and cannot be expressed as a safe code replacement.
+    - ``'unapplicable'``— the snippet could not be located in the current file.
+    - ``'committed'``   — the fix was successfully applied and committed.
+    """
     __tablename__ = "scan_fixes"
 
     id            = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -101,6 +131,12 @@ SessionLocal = sessionmaker(bind=engine)
 
 
 def init_db() -> None:
+    """Create all database tables if they do not yet exist, then run migrations.
+
+    Safe to call on every application startup — SQLAlchemy's ``create_all`` is
+    idempotent for existing tables, and :func:`_run_lightweight_migrations`
+    handles schema drift for columns added after a database was first created.
+    """
     Base.metadata.create_all(engine)
     _run_lightweight_migrations()
 

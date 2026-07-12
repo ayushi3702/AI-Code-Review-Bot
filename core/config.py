@@ -14,9 +14,15 @@ load_dotenv()
 
 
 # ── Paths / tuning ───────────────────────────────────────────────────────────
+# Directory where ChromaDB persists vector collections across restarts.
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./.chroma")
+# Temporary directory used to clone remote repos before crawling.
 SCAN_WORKSPACE_DIR = os.getenv("SCAN_WORKSPACE_DIR", "./.scan_workspace")
+# Files larger than this threshold are skipped during crawling to avoid
+# feeding the embedding model with minified bundles or auto-generated code.
 MAX_FILE_SIZE_KB = int(os.getenv("MAX_FILE_SIZE_KB", "512"))
+# Number of chunks retrieved per concern phrase during the retrieval step.
+# Higher values give agents more context but increase prompt token usage.
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "12"))
 
 # ── Azure deployments ────────────────────────────────────────────────────────
@@ -49,16 +55,28 @@ GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "repo")
 # Where to send the browser after a successful login.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 SESSION_COOKIE = os.getenv("SESSION_COOKIE", "crb_session")
+# True only when both OAuth credentials are present; guards endpoints that
+# require GitHub sign-in (commit, PR, and the OAuth flow itself).
 GITHUB_OAUTH_ENABLED = bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)
 
 
 
 @functools.lru_cache(maxsize=4)
 def get_chat_llm(max_tokens: int = 4000, json_mode: bool = True):
-    """Return a cached AzureChatOpenAI client.
+    """Return a cached :class:`AzureChatOpenAI` client for the configured deployment.
 
-    json_mode forces the model to emit a JSON object, which every agent relies
-    on to parse structured findings without regex scraping.
+    Results are cached via :func:`functools.lru_cache` keyed on the arguments,
+    so callers that request the same ``(max_tokens, json_mode)`` combination
+    reuse the same client instance rather than constructing a new one.
+
+    Args:
+        max_tokens: Upper bound on tokens the model may produce per response.
+        json_mode:  When ``True`` the model is instructed to emit a JSON object,
+                    which every specialist agent relies on to parse structured
+                    findings without fragile regex scraping.
+
+    Returns:
+        A configured :class:`langchain_openai.AzureChatOpenAI` instance.
     """
     from langchain_openai import AzureChatOpenAI
 
@@ -78,10 +96,18 @@ def get_chat_llm(max_tokens: int = 4000, json_mode: bool = True):
 
 @functools.lru_cache(maxsize=1)
 def get_embeddings():
-    """Return a cached embeddings client used to index the repo.
+    """Return a cached embeddings client used to index and query the repo vector store.
 
-    Provider is selected via EMBEDDING_PROVIDER: "azure" (Azure OpenAI) or
-    "huggingface" (local sentence-transformers, no API calls).
+    The provider is selected via the ``EMBEDDING_PROVIDER`` environment variable:
+
+    - ``"azure"`` (default) — uses Azure OpenAI embeddings; requires
+      ``AZURE_OPENAI_ENDPOINT`` and ``AZURE_OPENAI_API_KEY`` to be set.
+    - ``"huggingface"`` — runs a local :mod:`sentence_transformers` model
+      (``HF_EMBEDDING_MODEL``, default ``all-MiniLM-L6-v2``).  No API calls
+      or API key required; useful for offline or cost-free development.
+
+    Returns:
+        A LangChain embeddings instance compatible with :class:`~scanner.vector_store.VectorStore`.
     """
     if EMBEDDING_PROVIDER == "huggingface":
         from langchain_huggingface import HuggingFaceEmbeddings
